@@ -16,8 +16,7 @@ evoke specific sensations — restoring sensory feedback for prosthetic users.
 - **Phase A (current):** Synthetic fUS data simulating somatotopic finger 
   mapping in S1 — validate the full decoding pipeline before real data
 - **Phase B (next):** Transition to real neuroimaging data
-- **Phase C (future):** Replace linear decoder with neural network supporting 
-  online learning and finer-grained classification
+- **Phase C (future):** Replace linear decoder with neural network
 
 ## Scientific Foundation
 
