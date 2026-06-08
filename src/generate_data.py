@@ -61,12 +61,13 @@ def generate_finger_patches(image_size=128, patch_radius=8):
     
     return patches, centers
 
-def generate_trials(n_trials_per_finger=100, image_size=128, 
-                    patch_radius=8, signal_strength=0.15, 
-                    noise_std=0.05, tr=1.0, trial_duration=20):
+def generate_trials(n_trials_per_finger=100, image_size=128,
+                    patch_radius=8, signal_strength=0.15,
+                    noise_std=0.05, tr=1.0, trial_duration=20,
+                    trial_reliability=0.85, leakage_fraction=0.15):
     """
     Generate synthetic fUS trials for all 5 fingers.
-    
+
     Parameters:
         n_trials_per_finger : number of trials per finger (100 = 500 total)
         image_size          : width and height of fUS image in voxels
@@ -76,11 +77,15 @@ def generate_trials(n_trials_per_finger=100, image_size=128,
         noise_std           : standard deviation of background noise
         tr                  : time resolution in seconds (1Hz like Norman et al.)
         trial_duration      : length of each trial in seconds
+        trial_reliability   : probability that a trial produces an HRF response
+                              (0.85 = 15% of trials are noise-only, no response)
+        leakage_fraction    : fraction of signal that bleeds into adjacent patches
+                              (0.15 = neighbouring patches get 15% of active signal)
 
     Returns:
         X : array of shape (n_trials, n_voxels, n_timepoints)
             each trial is a flattened 2D image over time
-        y : array of shape (n_trials,) 
+        y : array of shape (n_trials,)
             integer label 0-4 indicating which finger was touched
         patches  : the spatial patch masks (for later visualization)
         centers  : the patch center coordinates (for later visualization)
@@ -88,42 +93,61 @@ def generate_trials(n_trials_per_finger=100, image_size=128,
     finger_names = ['thumb', 'index', 'middle', 'ring', 'pinky']
     patches, centers = generate_finger_patches(image_size, patch_radius)
     hrf, _ = generate_hrf(duration=trial_duration, tr=tr)
-    
+
     n_fingers = len(finger_names)
     n_trials = n_trials_per_finger * n_fingers
     n_timepoints = len(hrf)
     n_voxels = image_size * image_size
-    
+
+    # Flatten all patch masks once outside the loop
+    flat_patches = {name: patches[name].flatten() for name in finger_names}
+
     # Pre-allocate output arrays
     X = np.zeros((n_trials, n_voxels, n_timepoints))
     y = np.zeros(n_trials, dtype=int)
-    
+
     trial_idx = 0
-    
+
     for finger_idx, name in enumerate(finger_names):
-        mask = patches[name].flatten()  # flatten 128x128 -> 16384 voxels
-        
+        active_mask = flat_patches[name]
+
+        # Identify immediately adjacent patches for leakage
+        # Adjacent = the patches directly to the left and right in the somatotopic map
+        adjacent_names = []
+        if finger_idx > 0:
+            adjacent_names.append(finger_names[finger_idx - 1])
+        if finger_idx < n_fingers - 1:
+            adjacent_names.append(finger_names[finger_idx + 1])
+
         for _ in range(n_trials_per_finger):
             # Start with pure noise across all voxels and timepoints
             trial = np.random.normal(loc=0.0, scale=noise_std,
                                      size=(n_voxels, n_timepoints))
-            
-            # Add the HRF signal to the active patch voxels only
-            # Each active voxel gets the HRF shape scaled by signal_strength
-            # plus a small per-voxel random variation (+/- 20% of signal)
-            for voxel in np.where(mask)[0]:
-                voxel_scale = signal_strength * np.random.uniform(0.8, 1.2)
-                trial[voxel, :] += voxel_scale * hrf
-            
+
+            # Trial reliability — only add HRF signal if this trial fires
+            if np.random.random() < trial_reliability:
+
+                # Add HRF to the active patch voxels
+                for voxel in np.where(active_mask)[0]:
+                    voxel_scale = signal_strength * np.random.uniform(0.8, 1.2)
+                    trial[voxel, :] += voxel_scale * hrf
+
+                # Cross-patch leakage — adjacent patches get a fraction of the signal
+                for adj_name in adjacent_names:
+                    adj_mask = flat_patches[adj_name]
+                    for voxel in np.where(adj_mask)[0]:
+                        voxel_scale = signal_strength * leakage_fraction * np.random.uniform(0.8, 1.2)
+                        trial[voxel, :] += voxel_scale * hrf
+
             X[trial_idx] = trial
             y[trial_idx] = finger_idx
             trial_idx += 1
-    
+
     # Shuffle trials so fingers aren't in blocks
     shuffle_idx = np.random.permutation(n_trials)
     X = X[shuffle_idx]
     y = y[shuffle_idx]
-    
+
     return X, y, patches, centers
 
 if __name__ == "__main__":

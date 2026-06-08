@@ -15,7 +15,9 @@ evoke specific sensations — restoring sensory feedback for prosthetic users.
 
 - **Phase A (current):** Synthetic fUS data simulating somatotopic finger 
   mapping in S1 — validate the full decoding pipeline before real data
-- **Phase B (next):** Transition to real neuroimaging data
+- **Phase B (next):** Transition to real neuroimaging data — two parallel tracks:
+  - *Simulator enhancement:* Add physiological noise (cardiac ~1 Hz, respiratory ~0.3 Hz, slow CBV drift) to `generate_data.py` to make synthetic data more realistic; implement SVD clutter filter (Demené 2015) in a new `src/clutter_filter.py` module and benchmark SNR recovery with filter on vs. off
+  - *Real data:* Pending access to multi-condition somatosensory fUS recordings (Norman et al. NHP data requested); slot real data into the existing pipeline with minimal modification once available — requires updating `n_baseline_timepoints` and memory period window to match actual trial structure
 - **Phase C (future):** Replace linear decoder with neural network
 
 ## Scientific Foundation
