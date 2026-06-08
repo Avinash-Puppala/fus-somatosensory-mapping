@@ -2,22 +2,27 @@
 import numpy as np
 from scipy.stats import gamma
 
-def generate_hrf(duration=20, tr=1.0):
+def generate_hrf(duration=20, tr=1.0, peak_time=6.0):
     """
     Generate a hemodynamic response function (HRF).
-    
+
     Parameters:
-        duration : total time of the response in seconds
-        tr       : time resolution in seconds (1.0 = 1 image per second,
-                   matching the 1Hz refresh rate in Norman et al.)
-    
+        duration  : total time of the response in seconds
+        tr        : time resolution in seconds (1.0 = 1 image per second,
+                    matching the 1Hz refresh rate in Norman et al.)
+        peak_time : time in seconds at which the HRF peaks (default=6.0).
+                    Domain randomization varies this so the model cannot rely
+                    on a fixed memory window.
+
     Returns:
         hrf : normalized array of shape (duration/tr,)
         t   : time axis in seconds
     """
     t = np.arange(0, duration, tr)
-    hrf = gamma.pdf(t, a=6, scale=1)
-    hrf = hrf / hrf.max()  # normalize peak to 1.0
+    # peak ≈ (a-1)*scale for a gamma; with a=6, scale = peak_time/5
+    scale = max(peak_time / 5.0, 0.5)
+    hrf = gamma.pdf(t, a=6, scale=scale)
+    hrf = hrf / hrf.max()
     return hrf, t
 
 def generate_finger_patches(image_size=128, patch_radius=8):
@@ -64,55 +69,84 @@ def generate_finger_patches(image_size=128, patch_radius=8):
 def generate_trials(n_trials_per_finger=100, image_size=128,
                     patch_radius=8, signal_strength=0.15,
                     noise_std=0.05, tr=1.0, trial_duration=20,
-                    trial_reliability=0.85, leakage_fraction=0.15):
+                    trial_reliability=0.85, leakage_fraction=0.15,
+                    domain_randomize=True):
     """
     Generate synthetic fUS trials for all 5 fingers.
 
     Parameters:
         n_trials_per_finger : number of trials per finger (100 = 500 total)
         image_size          : width and height of fUS image in voxels
-        patch_radius        : radius of each finger's active patch
-        signal_strength     : peak blood volume change (0.15 = 15% above baseline,
-                              matching Mace et al. observations)
-        noise_std           : standard deviation of background noise
+        patch_radius        : radius of each finger's active patch (used as
+                              centre of range when domain_randomize=True)
+        signal_strength     : peak blood volume change (centre of range when
+                              domain_randomize=True)
+        noise_std           : std of background Gaussian noise (centre of range)
         tr                  : time resolution in seconds (1Hz like Norman et al.)
         trial_duration      : length of each trial in seconds
-        trial_reliability   : probability that a trial produces an HRF response
-                              (0.85 = 15% of trials are noise-only, no response)
-        leakage_fraction    : fraction of signal that bleeds into adjacent patches
-                              (0.15 = neighbouring patches get 15% of active signal)
+        trial_reliability   : fraction of trials that produce an HRF response
+        leakage_fraction    : fraction of signal bleeding into adjacent patches
+        domain_randomize    : if True, sample noise_std, signal_strength,
+                              patch_radius, HRF peak timing, trial_reliability,
+                              and leakage_fraction from ranges around their
+                              default values. Forces the model to learn features
+                              that are robust across conditions rather than
+                              specific to one set of parameters.
 
     Returns:
-        X : array of shape (n_trials, n_voxels, n_timepoints)
-            each trial is a flattened 2D image over time
-        y : array of shape (n_trials,)
-            integer label 0-4 indicating which finger was touched
-        patches  : the spatial patch masks (for later visualization)
-        centers  : the patch center coordinates (for later visualization)
+        X        : array of shape (n_trials, n_voxels, n_timepoints)
+        y        : array of shape (n_trials,) with finger labels 0-4
+        patches  : spatial patch masks (for visualization)
+        centers  : patch center coordinates (for visualization)
     """
     finger_names = ['thumb', 'index', 'middle', 'ring', 'pinky']
-    patches, centers = generate_finger_patches(image_size, patch_radius)
-    hrf, _ = generate_hrf(duration=trial_duration, tr=tr)
-
     n_fingers = len(finger_names)
     n_trials = n_trials_per_finger * n_fingers
-    n_timepoints = len(hrf)
+
+    # --- Domain randomization: sample trial-level parameters ---
+    # Each trial gets its own noise level, signal strength, and HRF shape.
+    # This prevents the model from overfitting to one set of simulator parameters.
+    if domain_randomize:
+        trial_noise_stds      = np.random.uniform(0.03, 0.10, n_trials)
+        trial_signal_strengths = np.random.uniform(0.08, 0.25, n_trials)
+        trial_peak_times      = np.random.uniform(4.0, 10.0, n_trials)
+        trial_reliabilities   = np.random.uniform(0.70, 0.95, n_trials)
+        trial_leakages        = np.random.uniform(0.05, 0.30, n_trials)
+        trial_patch_radii     = np.random.randint(6, 13, n_trials)
+    else:
+        trial_noise_stds       = np.full(n_trials, noise_std)
+        trial_signal_strengths = np.full(n_trials, signal_strength)
+        trial_peak_times       = np.full(n_trials, 6.0)
+        trial_reliabilities    = np.full(n_trials, trial_reliability)
+        trial_leakages         = np.full(n_trials, leakage_fraction)
+        trial_patch_radii      = np.full(n_trials, patch_radius, dtype=int)
+
+    # Use a fixed patch layout for visualization consistency; per-trial radius
+    # only affects which voxels receive signal, not the stored patch masks.
+    patches, centers = generate_finger_patches(image_size, patch_radius)
+
+    n_timepoints = int(trial_duration / tr)
     n_voxels = image_size * image_size
 
-    # Flatten all patch masks once outside the loop
-    flat_patches = {name: patches[name].flatten() for name in finger_names}
-
-    # Pre-allocate output arrays
     X = np.zeros((n_trials, n_voxels, n_timepoints))
     y = np.zeros(n_trials, dtype=int)
 
+    # Precompute distance maps for every finger center once.
+    # dist_maps[name] shape: (n_voxels,) — Euclidean distance from center.
+    # Per-trial masking then becomes a single numpy comparison (no Python loop).
+    rows_grid, cols_grid = np.mgrid[0:image_size, 0:image_size]
+    dist_maps = {}
+    for fname in finger_names:
+        cx, cy = centers[fname]
+        dist_maps[fname] = np.sqrt(
+            (rows_grid - cx) ** 2 + (cols_grid - cy) ** 2
+        ).flatten()
+
+    # Time axis for physiological noise
+    t = np.arange(n_timepoints) * tr
+
     trial_idx = 0
-
     for finger_idx, name in enumerate(finger_names):
-        active_mask = flat_patches[name]
-
-        # Identify immediately adjacent patches for leakage
-        # Adjacent = the patches directly to the left and right in the somatotopic map
         adjacent_names = []
         if finger_idx > 0:
             adjacent_names.append(finger_names[finger_idx - 1])
@@ -120,30 +154,44 @@ def generate_trials(n_trials_per_finger=100, image_size=128,
             adjacent_names.append(finger_names[finger_idx + 1])
 
         for _ in range(n_trials_per_finger):
-            # Start with pure noise across all voxels and timepoints
-            trial = np.random.normal(loc=0.0, scale=noise_std,
-                                     size=(n_voxels, n_timepoints))
+            t_noise_std = trial_noise_stds[trial_idx]
+            t_sig       = trial_signal_strengths[trial_idx]
+            t_peak      = trial_peak_times[trial_idx]
+            t_rel       = trial_reliabilities[trial_idx]
+            t_leak      = trial_leakages[trial_idx]
+            t_radius    = trial_patch_radii[trial_idx]
 
-            # Trial reliability — only add HRF signal if this trial fires
-            if np.random.random() < trial_reliability:
+            # Vectorized mask: one comparison instead of 16,384 iterations
+            active_mask = dist_maps[name] <= t_radius
 
-                # Add HRF to the active patch voxels
-                for voxel in np.where(active_mask)[0]:
-                    voxel_scale = signal_strength * np.random.uniform(0.8, 1.2)
-                    trial[voxel, :] += voxel_scale * hrf
+            trial = np.random.normal(0.0, t_noise_std, (n_voxels, n_timepoints))
 
-                # Cross-patch leakage — adjacent patches get a fraction of the signal
+            cardiac_amp     = 0.2  * t_noise_std * np.random.uniform(0.5, 1.5)
+            respiratory_amp = 0.15 * t_noise_std * np.random.uniform(0.5, 1.5)
+            physio_noise = (
+                cardiac_amp     * np.sin(2 * np.pi * 1.0 * t + np.random.uniform(0, 2 * np.pi)) +
+                respiratory_amp * np.sin(2 * np.pi * 0.3 * t + np.random.uniform(0, 2 * np.pi))
+            )
+            trial += physio_noise[np.newaxis, :]
+
+            if np.random.random() < t_rel:
+                hrf, _ = generate_hrf(duration=trial_duration, tr=tr,
+                                      peak_time=t_peak)
+
+                active_voxels = np.where(active_mask)[0]
+                voxel_scales  = t_sig * np.random.uniform(0.8, 1.2, len(active_voxels))
+                trial[active_voxels] += voxel_scales[:, np.newaxis] * hrf
+
                 for adj_name in adjacent_names:
-                    adj_mask = flat_patches[adj_name]
-                    for voxel in np.where(adj_mask)[0]:
-                        voxel_scale = signal_strength * leakage_fraction * np.random.uniform(0.8, 1.2)
-                        trial[voxel, :] += voxel_scale * hrf
+                    adj_mask   = dist_maps[adj_name] <= t_radius
+                    adj_voxels = np.where(adj_mask)[0]
+                    adj_scales = t_sig * t_leak * np.random.uniform(0.8, 1.2, len(adj_voxels))
+                    trial[adj_voxels] += adj_scales[:, np.newaxis] * hrf
 
             X[trial_idx] = trial
             y[trial_idx] = finger_idx
             trial_idx += 1
 
-    # Shuffle trials so fingers aren't in blocks
     shuffle_idx = np.random.permutation(n_trials)
     X = X[shuffle_idx]
     y = y[shuffle_idx]

@@ -5,32 +5,42 @@ import sys
 sys.path.insert(0, 'src')
 
 from generate_data import generate_trials
-from preprocess import baseline_normalize, select_features
-from decoder import decode
+from preprocess import baseline_normalize
+from train import train
 from visualize import plot_confusion_matrix, plot_weight_map, plot_per_fold_accuracy
 
 FINGER_NAMES = ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky']
 
+
 def run_pipeline(
     n_trials_per_finger=100,
-    n_components=20,
     n_folds=5,
-    trial_reliability=0.85,
-    leakage_fraction=0.15,
+    n_epochs=30,
+    batch_size=32,
+    lr=1e-3,
+    temporal_channels=32,
+    domain_randomize=True,
     save_figures=True,
 ):
     """
-    Run the full Phase A pipeline end to end.
+    Run the full pipeline end to end.
+
+    Phase 1 — Generate synthetic fUS data (with domain randomization).
+    Phase 2 — Baseline normalization.
+    Phase 3 — Cross-validated neural decoder (FingerprintDecoder).
+               Feature selection is performed inside each fold to avoid
+               the circular leakage bug present in the old CPCA+LDA pipeline.
+    Phase 4 — Visualize results.
 
     Parameters:
-        n_trials_per_finger : number of trials to generate per finger
-        n_components        : number of PCA components for the decoder
-        n_folds             : number of cross-validation folds
-        trial_reliability   : probability a trial produces an HRF response
-                              (0.85 = 15% of trials are noise-only)
-        leakage_fraction    : fraction of signal bleeding into adjacent patches
-                              (0.15 = neighbouring patches get 15% of active signal)
-        save_figures        : whether to save output figures to disk
+        n_trials_per_finger : trials generated per finger (500 total at default)
+        n_folds             : cross-validation folds
+        n_epochs            : training epochs per fold
+        batch_size          : mini-batch size for Adam
+        lr                  : Adam learning rate
+        temporal_channels   : width of the TemporalEncoder (model capacity)
+        domain_randomize    : vary HRF timing, noise, patch size etc. per trial
+        save_figures        : write PNGs to outputs/figures/
     """
     os.makedirs('outputs/figures', exist_ok=True)
 
@@ -40,14 +50,13 @@ def run_pipeline(
     print("=" * 50)
     X, y, patches, centers = generate_trials(
         n_trials_per_finger=n_trials_per_finger,
-        trial_reliability=trial_reliability,
-        leakage_fraction=leakage_fraction,
+        domain_randomize=domain_randomize,
     )
-    print(f"  Trials generated  : {X.shape[0]}")
-    print(f"  Trial reliability : {trial_reliability} ({int((1-trial_reliability)*100)}% noise-only trials)")
-    print(f"  Leakage fraction  : {leakage_fraction} ({int(leakage_fraction*100)}% signal bleed to adjacent patches)")
-    print(f"  Image size        : {X.shape[1]} voxels ({int(X.shape[1]**0.5)}x{int(X.shape[1]**0.5)})")
-    print(f"  Timepoints        : {X.shape[2]}")
+    print(f"  Trials generated    : {X.shape[0]}")
+    print(f"  Domain randomize    : {domain_randomize}")
+    print(f"  Image size          : {X.shape[1]} voxels "
+          f"({int(X.shape[1]**0.5)}x{int(X.shape[1]**0.5)})")
+    print(f"  Timepoints          : {X.shape[2]}")
 
     # --- Phase 2: Preprocess ---
     print("\n" + "=" * 50)
@@ -55,17 +64,21 @@ def run_pipeline(
     print("=" * 50)
     X_norm = baseline_normalize(X)
     print("  Baseline normalization complete")
+    # Note: select_features is now called inside each CV fold in train.py,
+    # which eliminates the circular feature-selection bug from the old pipeline.
 
-    X_selected, feature_mask, p_values = select_features(X_norm, y)
-    print(f"  Voxels before selection : {X.shape[1]}")
-    print(f"  Voxels after selection  : {X_selected.shape[1]}")
-    print(f"  Reduction               : {100*(1 - X_selected.shape[1]/X.shape[1]):.1f}%")
-
-    # --- Phase 3: Decode ---
+    # --- Phase 3: Train neural decoder ---
     print("\n" + "=" * 50)
-    print("Phase 3: Running CPCA + LDA decoder")
+    print("Phase 3: Training FingerprintDecoder (cross-validated)")
     print("=" * 50)
-    results = decode(X_selected, y, n_components=n_components, n_folds=n_folds)
+    results = train(
+        X_norm, y,
+        n_folds=n_folds,
+        n_epochs=n_epochs,
+        batch_size=batch_size,
+        lr=lr,
+        temporal_channels=temporal_channels,
+    )
     print(f"\n  Mean accuracy  : {results['accuracy']:.3f}")
     print(f"  Chance level   : 0.200  (5-class)")
     print(f"  Per-fold       : {[f'{a:.3f}' for a in results['per_fold_accuracy']]}")
@@ -76,11 +89,18 @@ def run_pipeline(
     print("=" * 50)
 
     cm_path = 'outputs/figures/confusion_matrix.png' if save_figures else None
-    wm_path = 'outputs/figures/weight_map.png' if save_figures else None
+    wm_path = 'outputs/figures/weight_map.png'       if save_figures else None
     fa_path = 'outputs/figures/per_fold_accuracy.png' if save_figures else None
 
-    plot_confusion_matrix(results['confusion_matrix'], FINGER_NAMES, save_path=cm_path)
-    plot_weight_map(results['decoder_weights'], feature_mask, centers, save_path=wm_path)
+    # Build a feature mask covering all voxels (attention weights are already
+    # in full voxel space — zeros where a voxel was never selected)
+    import numpy as np
+    full_mask = results['attention_weights'] > 0
+
+    plot_confusion_matrix(results['confusion_matrix'], FINGER_NAMES,
+                          save_path=cm_path)
+    plot_weight_map(results['attention_weights'], full_mask, centers,
+                    save_path=wm_path)
     plot_per_fold_accuracy(results['per_fold_accuracy'], save_path=fa_path)
 
     if save_figures:

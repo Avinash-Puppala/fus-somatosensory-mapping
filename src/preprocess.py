@@ -1,6 +1,7 @@
 """Part 2 — preprocessing."""
 import numpy as np
 from scipy import stats
+from scipy.stats import f as f_dist
 
 def baseline_normalize(X, n_baseline_timepoints=3):
     """
@@ -50,16 +51,27 @@ def select_features(X, y, q_threshold=0.05):
     # For each voxel, compute its mean signal across the memory period
     # We use timepoints 3-8 — the rising and peak phase of the HRF
     # This is analogous to Norman et al.'s memory delay period
-    memory_period = X[:, :, 3:8].mean(axis=2) # shape: (n_trials, n_voxels)
+    memory_period = X[:, :, 3:8].mean(axis=2)  # (n_trials, n_voxels)
 
-    # Run one-way ANOVA for each voxel
-    # Groups are the 5 finger conditions
-    # For each voxel: does mean activity differ across the 5 fingers?
-    p_values = np.zeros(n_voxels)
+    # Vectorized one-way ANOVA across all voxels simultaneously.
+    # Computing the F-statistic manually avoids 16,384 individual scipy calls.
+    n_groups = 5
+    group_masks = [y == f for f in range(n_groups)]
+    n_per_group = np.array([m.sum() for m in group_masks])            # (5,)
+    group_means = np.array([memory_period[m].mean(axis=0)
+                            for m in group_masks])                     # (5, V)
+    grand_mean  = memory_period.mean(axis=0)                          # (V,)
 
-    for voxel in range(n_voxels):
-        groups = [memory_period[y == finger, voxel] for finger in range(5)]
-        _, p_values[voxel] = stats.f_oneway(*groups)
+    ss_between = sum(n_per_group[f] * (group_means[f] - grand_mean) ** 2
+                     for f in range(n_groups))                         # (V,)
+    ss_within  = sum(((memory_period[group_masks[f]] - group_means[f]) ** 2
+                      ).sum(axis=0)
+                     for f in range(n_groups))                         # (V,)
+
+    df_between = n_groups - 1
+    df_within  = n_trials - n_groups
+    f_stats    = (ss_between / df_between) / np.maximum(ss_within / df_within, 1e-10)
+    p_values   = f_dist.sf(f_stats, df_between, df_within)
 
     # Apply FDR correction
     # Sort p-values and apply Benjamini-Hochberg procedure
