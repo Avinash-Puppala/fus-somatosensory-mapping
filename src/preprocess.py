@@ -50,16 +50,40 @@ def select_features(X, y, q_threshold=0.05):
     # For each voxel, compute its mean signal across the memory period
     # We use timepoints 3-8 — the rising and peak phase of the HRF
     # This is analogous to Norman et al.'s memory delay period
-    memory_period = X[:, :, 3:8].mean(axis=2) # shape: (n_trials, n_voxels)
+    memory_period = X[:, :, 3:8].mean(axis=2)  # (n_trials, n_voxels)
 
-    # Run one-way ANOVA for each voxel
-    # Groups are the 5 finger conditions
-    # For each voxel: does mean activity differ across the 5 fingers?
-    p_values = np.zeros(n_voxels)
+    # Vectorized one-way ANOVA across all voxels at once
+    # Rather than looping over each voxel, we compute the F-statistic
+    # directly using numpy, which is orders of magnitude faster.
+    classes = np.unique(y)
+    n_classes = len(classes)
 
-    for voxel in range(n_voxels):
-        groups = [memory_period[y == finger, voxel] for finger in range(5)]
-        _, p_values[voxel] = stats.f_oneway(*groups)
+    # Group means and grand mean
+    group_means = np.array([memory_period[y == c].mean(axis=0) for c in classes])  # (n_classes, n_voxels)
+    grand_mean = memory_period.mean(axis=0)  # (n_voxels,)
+
+    # Between-group sum of squares
+    group_ns = np.array([(y == c).sum() for c in classes])  # (n_classes,)
+    ss_between = np.sum(group_ns[:, None] * (group_means - grand_mean) ** 2, axis=0)  # (n_voxels,)
+
+    # Within-group sum of squares
+    ss_within = np.zeros(n_voxels)
+    for c, gm in zip(classes, group_means):
+        diff = memory_period[y == c] - gm  # (n_in_group, n_voxels)
+        ss_within += (diff ** 2).sum(axis=0)
+
+    # F-statistic and p-values
+    df_between = n_classes - 1
+    df_within = n_trials - n_classes
+    ms_between = ss_between / df_between
+    ms_within = ss_within / df_within
+
+    # Avoid division by zero for constant voxels
+    with np.errstate(divide='ignore', invalid='ignore'):
+        f_stats = np.where(ms_within > 0, ms_between / ms_within, 0.0)
+
+    from scipy.stats import f as f_dist
+    p_values = f_dist.sf(f_stats, df_between, df_within)  # survival function = 1 - CDF
 
     # Apply FDR correction
     # Sort p-values and apply Benjamini-Hochberg procedure

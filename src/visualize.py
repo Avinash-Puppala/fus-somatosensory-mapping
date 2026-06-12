@@ -41,15 +41,18 @@ def plot_weight_map(decoder_weights, feature_mask, centers, image_size=128, save
     Project decoder weights back onto the full brain image and plot.
 
     Parameters:
-        decoder_weights : (n_selected_voxels,) importance array from decode()
-        feature_mask    : (n_all_voxels,) boolean mask from select_features()
+        decoder_weights : (n_all_voxels,) importance array — already in full
+                          voxel space, as returned by decode()
+        feature_mask    : (n_all_voxels,) boolean consensus mask from decode()
+                          used to zero out non-selected voxels for clarity
         centers         : dict mapping finger name to (row, col) patch center
         image_size      : width/height of the brain image (default 128)
         save_path       : optional path to save the figure
     """
-    # Expand selected voxel weights back to full image space
-    full_weights = np.zeros(feature_mask.shape)
-    full_weights[feature_mask] = decoder_weights
+    # decoder_weights is already in full voxel space — just reshape
+    # Zero out voxels outside the consensus mask for a cleaner map
+    full_weights = decoder_weights.copy()
+    full_weights[~feature_mask] = 0
     weight_map = full_weights.reshape(image_size, image_size)
 
     fig, ax = plt.subplots(figsize=(7, 7))

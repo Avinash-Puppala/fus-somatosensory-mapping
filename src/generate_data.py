@@ -102,8 +102,9 @@ def generate_trials(n_trials_per_finger=100, image_size=128,
     # Flatten all patch masks once outside the loop
     flat_patches = {name: patches[name].flatten() for name in finger_names}
 
-    # Pre-allocate output arrays
-    X = np.zeros((n_trials, n_voxels, n_timepoints))
+    # Pre-allocate output arrays as float32 — halves memory vs float64
+    # with no meaningful precision loss for fUS signal values
+    X = np.zeros((n_trials, n_voxels, n_timepoints), dtype=np.float32)
     y = np.zeros(n_trials, dtype=int)
 
     trial_idx = 0

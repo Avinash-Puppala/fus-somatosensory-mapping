@@ -5,7 +5,7 @@ import sys
 sys.path.insert(0, 'src')
 
 from generate_data import generate_trials
-from preprocess import baseline_normalize, select_features
+from preprocess import baseline_normalize
 from decoder import decode
 from visualize import plot_confusion_matrix, plot_weight_map, plot_per_fold_accuracy
 
@@ -55,20 +55,18 @@ def run_pipeline(
     print("=" * 50)
     X_norm = baseline_normalize(X)
     print("  Baseline normalization complete")
-
-    X_selected, feature_mask, p_values = select_features(X_norm, y)
-    print(f"  Voxels before selection : {X.shape[1]}")
-    print(f"  Voxels after selection  : {X_selected.shape[1]}")
-    print(f"  Reduction               : {100*(1 - X_selected.shape[1]/X.shape[1]):.1f}%")
+    print("  Feature selection will run per fold inside the decoder (no leakage)")
 
     # --- Phase 3: Decode ---
     print("\n" + "=" * 50)
     print("Phase 3: Running CPCA + LDA decoder")
     print("=" * 50)
-    results = decode(X_selected, y, n_components=n_components, n_folds=n_folds)
+    results = decode(X_norm, y, n_components=n_components, n_folds=n_folds)
     print(f"\n  Mean accuracy  : {results['accuracy']:.3f}")
     print(f"  Chance level   : 0.200  (5-class)")
     print(f"  Per-fold       : {[f'{a:.3f}' for a in results['per_fold_accuracy']]}")
+    print(f"  HRF window     : t={results['memory_window'][0]}–{results['memory_window'][1]} (averaged across folds)")
+    print(f"  Consensus mask : {results['feature_mask'].sum()} voxels selected in ≥50% of folds")
 
     # --- Phase 4: Visualize ---
     print("\n" + "=" * 50)
@@ -80,7 +78,7 @@ def run_pipeline(
     fa_path = 'outputs/figures/per_fold_accuracy.png' if save_figures else None
 
     plot_confusion_matrix(results['confusion_matrix'], FINGER_NAMES, save_path=cm_path)
-    plot_weight_map(results['decoder_weights'], feature_mask, centers, save_path=wm_path)
+    plot_weight_map(results['decoder_weights'], results['feature_mask'], centers, save_path=wm_path)
     plot_per_fold_accuracy(results['per_fold_accuracy'], save_path=fa_path)
 
     if save_figures:
