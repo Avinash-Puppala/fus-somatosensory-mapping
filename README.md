@@ -11,6 +11,15 @@ can precisely identify which S1 voxels correspond to which phantom limb
 locations using fUS neuroimaging, we can target TFUS stimulation pulses to
 evoke specific sensations — restoring sensory feedback for prosthetic users.
 
+## NumPy-only pipeline (`npkit`)
+
+A dependency-light rebuild lives in `src/npkit/` (NumPy only — no scipy, sklearn,
+or torch). Run it with `python run_npkit.py` (~6 s, CPU). It reproduces the
+original ~84% baseline, adds a matched-filter temporal feature, fixes the
+circular feature-selection and hard-coded-window issues, and adds confidence-
+based selective prediction. **Key finding:** the ~85% accuracy ceiling is set by
+the simulator's trial dropout, not the decoder — see `docs/NPKIT_FINDINGS.md`.
+
 ## Current Status
 
 **Phase A is complete.** The full synthetic data pipeline runs end to end:
