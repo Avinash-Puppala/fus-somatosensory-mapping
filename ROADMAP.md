@@ -1,7 +1,43 @@
 # Project Roadmap & Direction
 
-_Last updated: 2026-06-09. Supersedes the "Pipeline Phases" section of the README,
+_Last updated: 2026-06-11. Supersedes the "Pipeline Phases" section of the README,
 which is partially stale (see Housekeeping)._
+
+## Positioning thesis
+
+_Canonical statement of what we are building and why it is defensible. Decision
+recorded in [DECISIONS.md](DECISIONS.md) entry 0001 (2026-06-11); revise here, append there._
+
+Functional ultrasound (fUS) neuroimaging has, over the past two years, established its
+core capabilities for brain–machine interfacing. Motor read-out is now well demonstrated:
+Griggs et al. (2023) decoded up to eight movement directions from macaque posterior parietal
+cortex in a closed-loop fUS BMI, and a 2025 miniaturized four-dimensional fUS device mapped
+human finger somatotopy and decoded single-trial finger movements volumetrically. The
+corresponding write-side hardware is also emerging, with dual-mode probes that perform
+imaging and focused-ultrasound neuromodulation through a single aperture. Against this
+backdrop, incremental gains in spatial resolution, imaging depth, or decoding accuracy offer
+limited strategic value to a computation-focused group, as that frontier is driven by
+laboratories with custom transducer hardware, surgical access, and nonhuman-primate
+facilities. The unaddressed problems are instead computational. First, generalization across
+subjects: existing decoders are recalibrated per subject, and even the cross-session
+pretraining of Griggs et al. remains within a single animal; to our knowledge, no fUS decoder
+has been shown to transfer across individuals. Second, sensory write-in targeting: although
+the hardware can deliver focused stimulation, no method maps where to stimulate or predicts
+the resulting percept.
+
+We therefore frame the project around a single falsifiable hypothesis, testable on openly
+available data already in hand: **a fUS decoder trained on one subject can decode neural
+activity in a second subject above chance, without per-session recalibration** (evaluated
+macaque A→B, with a mouse dataset as an out-of-distribution probe). The hypothesis is
+rejected if cross-subject decoding does not exceed chance. Two further robustness
+properties—within-session stability (decoding accuracy retained across a single recording)
+and cross-session transfer (same subject, separate days)—are reported as characterization
+metrics rather than novel contributions, as both are already addressed by existing
+closed-loop systems. The resulting subject-invariant representation is intended as the
+substrate for the project's longer-term objective: a sensory-targeting framework
+(map → focused-ultrasound target → acoustic-field simulation → predicted percept) that
+couples generalizable decoding with existing write-capable hardware to close a
+read–write–verify loop.
 
 ## The reframe
 
